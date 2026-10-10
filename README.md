@@ -19,7 +19,7 @@ group and sends signed commands; results come back in well under a second.
 
 | File | Runs on | Purpose |
 |---|---|---|
-| `nano_agent.py`, `nano_proto.py` | A-GUI | The agent. Screenshot, zoom, mouse, keyboard, PowerShell, windows, files |
+| `nano_agent.py`, `nano_proto.py`, `nano_jobs.py`, `nano_safety.py` | A-GUI | The agent. Screenshot, zoom, mouse, keyboard, PowerShell, windows, files |
 | `nano_client.py` | your PC | Python library for scripted demos (`click`, `type`, `click_image`, `run`...) |
 | `nano_cli.py` | your PC | One-shot commands, a REPL, and `play` for JSON demo scripts |
 | `claude_driver.py` | your PC | Claude drives A-GUI via the computer use toolset + PowerShell |
