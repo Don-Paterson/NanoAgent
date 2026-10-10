@@ -151,17 +151,23 @@ class NanoClient:
     def _decode(image: dict) -> Image.Image:
         return Image.open(io.BytesIO(base64.b64decode(image["data"])))
 
-    def screenshot_raw(self, format: str = "jpeg") -> dict:
-        return self.call("screenshot", format=format)["image"]
+    def screenshot_raw(self, format: str = "jpeg", quality: Optional[int] = None) -> dict:
+        args = {"format": format}
+        if quality is not None:
+            args["quality"] = quality           # lower quality = fewer bytes = fewer billed messages
+        return self.call("screenshot", **args)["image"]
 
-    def screenshot(self, save: Optional[str] = None) -> Image.Image:
-        img = self._decode(self.screenshot_raw())
+    def screenshot(self, save: Optional[str] = None, quality: Optional[int] = None) -> Image.Image:
+        img = self._decode(self.screenshot_raw(quality=quality))
         if save:
             img.save(save)
         return img
 
-    def zoom(self, x0, y0, x1, y1, save: Optional[str] = None) -> Image.Image:
-        img = self._decode(self.call("zoom", region=[x0, y0, x1, y1])["image"])
+    def zoom(self, x0, y0, x1, y1, save: Optional[str] = None, quality: Optional[int] = None) -> Image.Image:
+        args = {"region": [x0, y0, x1, y1]}
+        if quality is not None:
+            args["quality"] = quality
+        img = self._decode(self.call("zoom", **args)["image"])
         if save:
             img.save(save)
         return img
@@ -223,14 +229,64 @@ class NanoClient:
     def move_window(self, title_regex: str, x: int, y: int, w: int, h: int) -> str:
         return self.call("move_window", title=title_regex, rect=[x, y, w, h])["title"]
 
-    def get_file(self, remote: str, local: str) -> int:
-        r = self.call("file_get", path=remote)
-        Path(local).write_bytes(base64.b64decode(r["data"]))
-        return r["size"]
+    CHUNK = 384 * 1024          # raw bytes per file transfer message (agent limit is 512 KB)
+
+    def get_file(self, remote: str, local: str, tail: Optional[int] = None) -> int:
+        """Fetch a file in chunks.  tail=N fetches only the last N bytes.  Returns bytes written.
+        Each chunk is one Web PubSub message, so a big file costs many messages: see CLAUDE.md."""
+        if tail is not None:
+            r = self.call("file_get", path=remote, tail=tail)
+            Path(local).write_bytes(base64.b64decode(r["data"]))
+            return r["length"]
+        r = self.call("file_get", path=remote, offset=0, length=self.CHUNK)
+        total = r["size"]
+        written = 0
+        with open(local, "wb") as f:
+            while True:
+                chunk = base64.b64decode(r["data"])
+                f.write(chunk)
+                written += len(chunk)
+                if r["eof"] or not chunk:
+                    break
+                r = self.call("file_get", path=remote, offset=written, length=self.CHUNK)
+        if written != total:
+            raise NanoError(f"file_get: got {written} of {total} bytes (file changed while reading?)")
+        return written
 
     def put_file(self, local: str, remote: str, overwrite: bool = False) -> str:
-        data = base64.b64encode(Path(local).read_bytes()).decode("ascii")
-        return self.call("file_put", path=remote, data=data, overwrite=overwrite)["path"]
+        raw = Path(local).read_bytes()
+        path = remote
+        for i in range(0, max(len(raw), 1), self.CHUNK):
+            data = base64.b64encode(raw[i:i + self.CHUNK]).decode("ascii")
+            r = self.call("file_put", path=remote, data=data, overwrite=overwrite if i == 0 else False,
+                          append=i > 0)
+            path = r["path"]
+        return path
+
+    def file_sha256(self, remote: str) -> dict:
+        return self.call("file_sha256", path=remote)
+
+    # ------------------------------------------------------------------ jobs (long-running work)
+    def job_start(self, script: Optional[str] = None, command: Optional[str] = None, shell: str = "pwsh",
+                  timeout: Optional[int] = None, watch=None, name: Optional[str] = None) -> dict:
+        args = {"shell": shell}
+        for k, v in (("script", script), ("command", command), ("timeout", timeout), ("watch", watch), ("name", name)):
+            if v is not None:
+                args[k] = v
+        return self.call("job_start", **args)
+
+    def job_status(self, job_id: Optional[str] = None) -> list:
+        return self.call("job_status", **({"id": job_id} if job_id else {}))["jobs"]
+
+    def job_tail(self, job_id: str, lines: int = 40, watch: bool = True) -> dict:
+        return self.call("job_tail", id=job_id, lines=lines, watch=watch)
+
+    def job_kill(self, job_id: str) -> dict:
+        return self.call("job_kill", id=job_id)
+
+    def usage(self) -> dict:
+        """Estimated Web PubSub messages (2 KB units) this client has sent and received."""
+        return self._link.usage()
 
     # ------------------------------------------------------------------ image anchors (controller side)
     def find_image(self, template: str, threshold: float = 0.9,

@@ -240,7 +240,12 @@ or for testing. It is plain `ws://`, so use the Azure path for anything that cro
 
 `ping info screenshot zoom cursor_position left_click right_click middle_click double_click
 triple_click left_click_drag mouse_move left_mouse_down left_mouse_up scroll type key hold_key
-wait run windows focus_window move_window file_get file_put`
+wait run windows focus_window move_window file_get file_put file_sha256
+job_start job_status job_tail job_kill`
+
+1.2 adds detached jobs (up to 2 h, killable, with watched logs), chunked file transfer with
+SHA-256 verification, a `quality` option on screenshots, log redaction, and a TLS-inspection
+guard (`tls_guard` in agent.json: `enforce` by default, `warn`, `off`). See CLAUDE.md.
 
 The mouse and keyboard ops use the same names and arguments as Claude's computer use
 members, so the driver forwards Claude's calls unchanged. Keys accept xdotool-style names
@@ -258,3 +263,6 @@ typing, keys, zoom, run, files, anchors, replay rejection, encryption (a spy wit
 relay token sees only ciphertext and can't inject; wrong key, wrong group and tampered
 messages are rejected; a worst-case screenshot fits the 1 MB frame limit), and the Claude
 driver's batch and loop handling against a scripted fake API.
+
+`python tests/test_jobs.py` covers the 1.2 additions (jobs, redaction, TLS guard, chunked files,
+usage counters) and needs no display or Tk.

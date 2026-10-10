@@ -81,9 +81,40 @@ python3 nano_session.py run "Start-Process powershell.exe -WindowStyle Hidden -A
 sleep 15 && python3 nano_session.py op info      # reconnects by itself; check "agent" version
 ```
 
+Version 1.2 adds new modules, so the update must also send `nano_jobs.py` and `nano_safety.py`
+(same file_put pattern, then restart). Check `op info`: `"agent": "1.2.0"`.
+
 ## Usage budget
 
 The Web PubSub Free tier allows 20,000 messages a day, billed in 2 KB units of traffic.
 A screenshot costs ~25–70 messages, a click or command ~1–3. That's several hundred
 screenshots a day: plenty, but don't poll screenshots in a loop. Use `zoom` for detail and
 `run` for state. Don can check the day's use with `NanoAzure.ps1` option **U**.
+
+Cost-saving habits (1.2): `peek` is a quality-40 screenshot at about half the messages; `usage`
+prints today's estimate from this session's traffic and warns above 70%. Files move in 384 KB
+chunks, one message each, so compress or filter on A-GUI first (`get --tail N` for logs).
+Credentials are never sent in a job script: type them with the GUI or read them on A-GUI from a
+protected file; `type` text and anything that looks like a password is redacted from logs.
+
+## Long-running work (1.2)
+
+Jobs run detached on A-GUI and survive a dropped connection or restarted agent (up to 2 h):
+
+```bash
+python3 nano_session.py job start script.ps1 [timeout] [name]   # '# relay: timeout=N' and 'watch=GLOB' headers honoured
+python3 nano_session.py job status [id]        # a few lines, cheap
+python3 nano_session.py job tail <id> [lines]  # end of output plus watched files
+python3 nano_session.py job kill <id>          # stops the whole process tree (a stuck prompt no longer blocks anything)
+python3 nano_session.py sha <remote>           # verify a transfer
+```
+
+Poll with `job status` at sensible intervals (minutes, not seconds): each call is a few messages.
+Jobs older than 14 days are purged; output is capped at 64 MB. `run` accepts `shell: pwsh`.
+
+## TLS guard (1.2)
+
+Before sending its key the agent checks who issued the Azure certificate (Microsoft or DigiCert).
+If a firewall is inspecting HTTPS it refuses to connect and says so in the taskbar banner and log.
+In agent.json: `"tls_guard": "warn"` (log only) or `"off"`; `"tls_trusted_issuers": [...]` to extend.
+`op info` reports `tls_guard`, `tls`, `elevated`, `pwsh` and `jobs_running`.

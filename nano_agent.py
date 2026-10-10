@@ -49,10 +49,12 @@ import mss
 import pyautogui
 from PIL import Image
 
+from nano_jobs import JobManager, find_pwsh, resolve_shell, run_capture, shell_argv
 from nano_proto import (PROTO_VERSION, PubSubLink, ReplayGuard, key_from_secret, sign,
                         support_session, verify)
+from nano_safety import make_guard, redact_args
 
-__version__ = "1.1.2"
+__version__ = "1.2.0"
 pyautogui.FAILSAFE = False      # Claude may legitimately click (0,0); use the kill hotkey instead
 pyautogui.PAUSE = 0.03
 log = logging.getLogger("nano.agent")
@@ -404,7 +406,10 @@ class Agent:
         self.queue: asyncio.Queue = asyncio.Queue()
         self.status_cb = status_cb or (lambda s: None)
         self.last_activity = time.time()
-        self.link = PubSubLink(cfg["negotiate_url"], "agent", group, key, self.on_data, self.on_connect)
+        self.tls_guard = make_guard(cfg, self.status_cb)      # TLS-inspection check before the key is sent
+        self.link = PubSubLink(cfg["negotiate_url"], "agent", group, key, self.on_data, self.on_connect,
+                               guard=self.tls_guard)
+        self.jobs = JobManager(Path(cfg.get("jobs_dir") or HERE), log)
 
     # ---- transport callbacks
     async def on_connect(self):
@@ -442,8 +447,7 @@ class Agent:
             cmd = await self.queue.get()
             op, args = cmd.get("op"), cmd.get("args") or {}
             self.last_activity = time.time()
-            short = {k: (v if len(str(v)) < 120 else f"<{len(str(v))} chars>") for k, v in args.items()}
-            log.info("cmd %s %s", op, short)
+            log.info("cmd %s %s", op, redact_args(op, args))      # typed text and secrets never reach the log
             try:
                 fn = getattr(self, f"op_{op}", None)
                 if fn is None:
@@ -461,7 +465,20 @@ class Agent:
                 "screen": [self.screen.width, self.screen.height],
                 "screenshot": [self.screen.shot_w, self.screen.shot_h], "scale": self.screen.scale,
                 "allow_run": bool(self.cfg.get("allow_run", True)),
-                "allow_files": bool(self.cfg.get("allow_files", True))}
+                "allow_files": bool(self.cfg.get("allow_files", True)),
+                "elevated": self._elevated(), "pwsh": find_pwsh(),
+                "tls_guard": str(self.cfg.get("tls_guard", "enforce")).lower(),
+                "tls": (self.tls_guard.state["results"] if self.tls_guard else {}),
+                "jobs_running": sum(1 for j in self.jobs.status(limit=50)["jobs"] if j["status"] == "running")}
+
+    @staticmethod
+    def _elevated():
+        try:
+            if IS_WIN:
+                return bool(ctypes.windll.shell32.IsUserAnAdmin())
+            return os.geteuid() == 0
+        except Exception:
+            return None
 
     @staticmethod
     async def _t(fn, *a, **kw):
@@ -474,13 +491,18 @@ class Agent:
     async def op_info(self):
         return self.info()
 
-    async def op_screenshot(self, format: str = "jpeg"):
-        img = await self._t(self.screen.screenshot)
-        return {"image": self.screen.encode(img, format, self.cfg.get("jpeg_quality", 70))}
+    def _quality(self, quality):
+        """JPEG quality for this reply: lower = fewer bytes = fewer billed Web PubSub messages."""
+        q = self.cfg.get("jpeg_quality", 70) if quality is None else quality
+        return int(max(20, min(90, q)))
 
-    async def op_zoom(self, region, format: str = "jpeg"):
+    async def op_screenshot(self, format: str = "jpeg", quality: int = None):
+        img = await self._t(self.screen.screenshot)
+        return {"image": self.screen.encode(img, format, self._quality(quality))}
+
+    async def op_zoom(self, region, format: str = "jpeg", quality: int = None):
         img = await self._t(self.screen.zoom, region)
-        return {"image": self.screen.encode(img, format, self.cfg.get("jpeg_quality", 70))}
+        return {"image": self.screen.encode(img, format, self._quality(quality))}
 
     async def op_cursor_position(self):
         p = pyautogui.position()
@@ -577,30 +599,54 @@ class Agent:
         await asyncio.sleep(max(0.0, min(float(duration), 300.0))); return {}
 
     # ---- ops: shell
-    async def op_run(self, command, timeout: float = 60, shell: str = "auto"):
+    def _need_run(self):
         if not self.cfg.get("allow_run", True):
             raise PermissionError("run is disabled on this agent")
+
+    async def op_run(self, command, timeout: float = 60, shell: str = "auto"):
+        """Run a command and wait for it (max 10 min).  For anything longer use job_start.
+
+        shell: auto | powershell (5.1) | pwsh (7) | cmd | bash.  'auto' keeps the old behaviour:
+        Windows PowerShell on Windows, bash elsewhere.  On timeout the whole process tree is killed."""
+        self._need_run()
         timeout = max(1.0, min(float(timeout), 600.0))
         if shell == "auto":
             shell = "powershell" if IS_WIN else "bash"
-        if shell == "powershell":
-            argv = ["powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-                    "-Command", "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + command]
-        elif shell == "cmd":
-            argv = ["cmd.exe", "/d", "/c", command]
-        else:
-            argv = ["bash", "-lc", command]
+        argv = shell_argv(shell, command=command)
 
         def go():
-            kw = {"creationflags": 0x08000000} if IS_WIN else {}          # CREATE_NO_WINDOW
-            try:
-                r = subprocess.run(argv, capture_output=True, timeout=timeout, **kw)
-                rc, out, err = r.returncode, r.stdout, r.stderr
-            except subprocess.TimeoutExpired as e:
-                rc, out, err = -1, e.stdout or b"", (e.stderr or b"") + f"\n[timed out after {timeout}s]".encode()
+            r = run_capture(argv, timeout)
             dec = lambda b: b.decode("utf-8", "replace")
-            return {"rc": rc, "stdout": dec(out)[-60000:], "stderr": dec(err)[-20000:]}
+            err = dec(r["err"])
+            if r["timed_out"]:
+                err += f"\n[timed out after {timeout}s; process tree killed]"
+            return {"rc": r["rc"], "stdout": dec(r["out"])[-60000:], "stderr": err[-20000:]}
         return await self._t(go)
+
+    # ---- ops: jobs (long-running work that survives a dropped connection)
+    async def op_job_start(self, script=None, command=None, shell: str = "pwsh", timeout=None, watch=None,
+                           name=None):
+        """Start a detached job.  Returns at once; poll with job_status / job_tail.
+        timeout up to 7200 s; `# relay: timeout=N` and `# relay: watch=<glob>` header lines are honoured."""
+        self._need_run()
+        if isinstance(watch, str):
+            watch = [watch]
+        sh = shell
+        if sh == "pwsh" and not find_pwsh():
+            sh = "powershell" if IS_WIN else "bash"           # fall back rather than fail
+        return await self._t(self.jobs.start, command, script, sh, timeout, watch, name)
+
+    async def op_job_status(self, id=None, limit: int = 10):
+        self._need_run()
+        return await self._t(self.jobs.status, id, limit)
+
+    async def op_job_tail(self, id, lines: int = 40, max_bytes: int = 24000, watch: bool = True):
+        self._need_run()
+        return await self._t(self.jobs.tail, id, lines, max_bytes, watch)
+
+    async def op_job_kill(self, id):
+        self._need_run()
+        return await self._t(self.jobs.kill, id)
 
     # ---- ops: windows
     async def op_windows(self):
@@ -640,28 +686,67 @@ class Agent:
         if not self.cfg.get("allow_files", True):
             raise PermissionError("file transfer is disabled on this agent")
 
-    async def op_file_get(self, path):
+    async def op_file_get(self, path, offset: int = None, length: int = None, tail: int = None):
+        """Read a file.  Up to 512 KB in one call; a bigger file must be fetched in chunks
+        (offset/length) or just its end (tail).  Large transfers cost Web PubSub messages:
+        prefer job_tail, or compress / filter on the lab machine first."""
         self._file_check()
         p = Path(os.path.expandvars(path)).expanduser()
-        data = await self._t(p.read_bytes)
-        if len(data) > MAX_FILE_BYTES:
-            raise ValueError(f"file is {len(data)} bytes; limit {MAX_FILE_BYTES}")
-        return {"path": str(p), "size": len(data), "data": base64.b64encode(data).decode("ascii")}
 
-    async def op_file_put(self, path, data, overwrite: bool = False):
+        def go():
+            size = p.stat().st_size
+            off, ln = offset, length
+            if tail is not None:
+                off, ln = max(0, size - int(tail)), int(tail)
+            if off is None and ln is None:
+                if size > MAX_FILE_BYTES:
+                    raise ValueError(f"file is {size} bytes; limit {MAX_FILE_BYTES} per call - use offset/length "
+                                     f"to fetch it in chunks, tail to read just the end, or compress it first")
+                off, ln = 0, size
+            off = max(0, int(off or 0))
+            ln = int(size - off if ln is None else ln)
+            ln = max(0, min(ln, MAX_FILE_BYTES, size - off))
+            with open(p, "rb") as f:
+                f.seek(off)
+                data = f.read(ln)
+            return {"path": str(p), "size": size, "offset": off, "length": len(data),
+                    "eof": off + len(data) >= size, "data": base64.b64encode(data).decode("ascii")}
+        return await self._t(go)
+
+    async def op_file_put(self, path, data, overwrite: bool = False, append: bool = False):
+        """Write a file (max 512 KB per call).  append=true adds to the end, for sending a bigger file in chunks."""
         self._file_check()
         raw = base64.b64decode(data)
         if len(raw) > MAX_FILE_BYTES:
             raise ValueError("file too large")
         p = Path(os.path.expandvars(path)).expanduser()
-        if p.exists() and not overwrite:
+        if p.exists() and not (overwrite or append):
             raise FileExistsError(f"{p} exists (pass overwrite=true)")
         p.parent.mkdir(parents=True, exist_ok=True)
-        await self._t(p.write_bytes, raw)
-        return {"path": str(p), "size": len(raw)}
+
+        def go():
+            with open(p, "ab" if append else "wb") as f:
+                f.write(raw)
+            return {"path": str(p), "size": p.stat().st_size, "written": len(raw)}
+        return await self._t(go)
+
+    async def op_file_sha256(self, path):
+        """Size and SHA-256 of a file on the lab machine (to verify a chunked transfer)."""
+        self._file_check()
+        import hashlib
+        p = Path(os.path.expandvars(path)).expanduser()
+
+        def go():
+            h = hashlib.sha256()
+            with open(p, "rb") as f:
+                for blk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(blk)
+            return {"path": str(p), "size": p.stat().st_size, "sha256": h.hexdigest()}
+        return await self._t(go)
 
     # ---- main
     async def run(self, stop: asyncio.Event, idle_exit_min: float = 0):
+        await self._t(self.jobs.recover)            # pick up jobs that outlived the previous agent
         tasks = [asyncio.create_task(self.link.run_forever(stop)), asyncio.create_task(self.worker())]
         if idle_exit_min:
             async def idle():

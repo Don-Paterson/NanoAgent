@@ -29,6 +29,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import time
 import urllib.parse
@@ -177,9 +178,15 @@ class PubSubLink:
 
     def __init__(self, negotiate_url: str, role: str, group: str, key: bytes,
                  on_data: Callable[[dict], Awaitable[None]],
-                 on_connect: Optional[Callable[[], Awaitable[None]]] = None):
+                 on_connect: Optional[Callable[[], Awaitable[None]]] = None,
+                 guard: Optional[Callable[[str], None]] = None):
         self.key = key
+        self.guard = guard                 # guard(url) raises to stop a connection (TLS inspection check)
+        self.guard_error: Optional[str] = None
         self.dropped = 0
+        # Web PubSub bills delivered messages in 2 KB units: count them here (estimate)
+        self.msgs_out = self.msgs_in = 0
+        self.units_out = self.units_in = 0
         self.negotiate_url = negotiate_url
         self.role = role
         self.group = group
@@ -194,7 +201,12 @@ class PubSubLink:
         backoff = 1.0
         while not stop.is_set():
             try:
+                if self.guard:
+                    await asyncio.to_thread(self.guard, self.negotiate_url)
                 url = await asyncio.to_thread(negotiate, self.negotiate_url, self.role, self.group)
+                if self.guard:
+                    await asyncio.to_thread(self.guard, url)
+                self.guard_error = None
                 async with websockets.connect(url, subprotocols=[SUBPROTOCOL],
                                               max_size=MAX_WS_MESSAGE, ping_interval=20,
                                               ping_timeout=20, open_timeout=20) as ws:
@@ -216,12 +228,25 @@ class PubSubLink:
                 raise
             except Exception as e:  # network, auth, negotiate errors
                 log.warning("link: %s: %s", type(e).__name__, e)
+                if type(e).__name__ == "TlsGuardError":
+                    self.guard_error = str(e)
+                    backoff = 120.0          # nothing will change in a few seconds: stay quiet
             finally:
                 self.ws = None
                 self.connected.clear()
             if not stop.is_set():
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 30)
+
+    @staticmethod
+    def _units(n: int) -> int:
+        return max(1, math.ceil(n / 2048))
+
+    def usage(self) -> dict:
+        """Estimated Web PubSub traffic seen by this end since it started."""
+        return {"msgs_out": self.msgs_out, "msgs_in": self.msgs_in,
+                "units_out": self.units_out, "units_in": self.units_in,
+                "units": self.units_out + self.units_in}
 
     async def _read(self, ws):
         async for raw in ws:
@@ -230,6 +255,9 @@ class PubSubLink:
             except ValueError:
                 continue
             t = m.get("type")
+            if t == "message":
+                self.msgs_in += 1
+                self.units_in += self._units(len(raw))
             if t == "ack":
                 if not m.get("success", True):
                     log.warning("link: ack failure %s", m.get("error"))
@@ -267,3 +295,5 @@ class PubSubLink:
                             "data": seal(data, self.key, self.group), "noEcho": True})
         async with self._send_lock:
             await ws.send(frame)
+        self.msgs_out += 1
+        self.units_out += self._units(len(frame))
