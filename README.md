@@ -28,6 +28,7 @@ group and sends signed commands; results come back in well under a second.
 | `Install-NanoAgent.ps1` | A-GUI | Installs Python (if missing), venv, agent, optional logon start |
 | `Uninstall-NanoAgent.ps1` | A-GUI | Stops the agent, removes the logon task and `C:\NanoAgent` |
 | `Remove-NanoAzure.ps1` | your PC | Deletes everything in Azure (one resource group) |
+| `NanoAzure.ps1` | your PC | **Menu** for all of the above: status, deploy, test, tear down, rotate, settings |
 
 ## Security model
 
@@ -52,7 +53,16 @@ and the secret can drive the machine.
 
 ## 1. Deploy the rendezvous (once)
 
-Needs the Azure CLI (logged in) and ideally Azure Functions Core Tools (`func`).
+Needs the Azure CLI and ideally Azure Functions Core Tools (`func`). The easy way:
+
+```powershell
+.\NanoAzure.ps1
+```
+
+This opens a menu covering login and subscription choice, status, deploy, testing the
+Function and the agent, opening the config folder, tear down (keeping or wiping the
+config), rotating secrets, and settings. Resource group, location, tier and group are
+remembered in `config\settings.json`. The scripts below do the same things unattended.
 
 ```powershell
 .\deploy.ps1 -ResourceGroup rg-nanoagent -Location uksouth            # Free tier
