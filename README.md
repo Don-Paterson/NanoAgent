@@ -61,7 +61,7 @@ Needs the Azure CLI and ideally Azure Functions Core Tools (`func`). The easy wa
 
 This opens a menu covering login and subscription choice, status, deploy, testing the
 Function and the agent, opening the config folder, tear down (keeping or wiping the
-config), rotating secrets, and settings. Resource group, location, tier and group are
+config), rotating secrets, the A-GUI install one-liner, and settings. Resource group, location, tier and group are
 remembered in `config\settings.json`. The scripts below do the same things unattended.
 
 ```powershell
@@ -107,25 +107,30 @@ again, so you can tear Azure down whenever it's idle.
 
 ## 2. Install the agent on A-GUI
 
-```powershell
-# with agent.json next to the script:
-.\Install-NanoAgent.ps1 -AutoStart
+**One-liner from GitHub (repo must be public):** run `.\NanoAzure.ps1` and choose **9**. It copies a
+command like this to your clipboard; paste it into PowerShell on A-GUI (Skillable: Type Text):
 
-# or from GitHub, config fetched from a URL you control (e.g. a short-lived SAS link).
-# While the repo is private, GITHUB_TOKEN (fine-grained, Contents: read on this repo) is required
-# both to fetch the script and for the script to fetch the agent:
-$env:GITHUB_TOKEN = 'github_pat_...'
-$env:NANO_CONFIG_URL = 'https://.../agent.json'
-$h = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github.raw' }
-& ([scriptblock]::Create((irm https://api.github.com/repos/Don-Paterson/NanoAgent/contents/Install-NanoAgent.ps1 -Headers $h))) -AutoStart
+```powershell
+$env:NANO_CONFIG_B64='eyJu...'; $env:NANO_AUTOSTART='1'; irm https://raw.githubusercontent.com/Don-Paterson/NanoAgent/main/Install-NanoAgent.ps1 | iex
 ```
 
-Run from a copy of the repo (copied folder, USB, Skillable file drop), the installer uses the
-local files and needs no GitHub access at all.
+The repo holds no secrets. `agent.json` travels inside the command, base64-encoded (that's
+encoding, not encryption, so treat the command like a password). The installer validates it,
+removes it from the environment, and scrubs the line from PowerShell history before going on.
+Option 9 also warns you if the installer URL isn't reachable anonymously (repo still private).
 
-This installs to `C:\NanoAgent` with its own venv, creates `Start-NanoAgent.cmd`,
-locks `agent.json` down to the current user, and with `-AutoStart` registers an
-interactive logon task (the agent must run in the desktop session to see the screen).
+**From a copy of the repo** (no GitHub access needed): put `config\agent.json` in the top level
+of the copied folder and run:
+
+```powershell
+.\Install-NanoAgent.ps1 -AutoStart
+```
+
+Either way this installs Python 3.12 if it's missing, then the agent to `C:\NanoAgent` with its own
+venv, and creates `Start-NanoAgent.cmd`. It stops any running agent first, so re-running it
+upgrades in place. `agent.json` is locked down to the current user, and `-AutoStart`/`NANO_AUTOSTART`
+registers an interactive logon task (the agent must run in the desktop session to see the screen)
+and starts the agent.
 
 Manual run: `C:\NanoAgent\Start-NanoAgent.cmd`
 Remove: `C:\NanoAgent\Uninstall-NanoAgent.ps1` (stops it, removes the task and the folder)

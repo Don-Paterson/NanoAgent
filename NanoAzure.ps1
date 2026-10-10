@@ -20,7 +20,7 @@ $CtlFile = Join-Path $ConfigDir 'controller.json'
 $AgentFile = Join-Path $ConfigDir 'agent.json'
 
 # ------------------------------------------------------------------ settings
-$Settings = [ordered]@{ ResourceGroup = 'rg-nanoagent'; Location = 'uksouth'; Sku = 'Free_F1'; Group = 'lab-a-gui' }
+$Settings = [ordered]@{ ResourceGroup = 'rg-nanoagent'; Location = 'uksouth'; Sku = 'Free_F1'; Group = 'lab-a-gui'; Repo = 'Don-Paterson/NanoAgent' }
 if (Test-Path $SettingsFile) {
     $saved = Get-Content -Raw $SettingsFile | ConvertFrom-Json
     foreach ($k in @($Settings.Keys)) { if ($saved.$k) { $Settings[$k] = $saved.$k } }
@@ -166,17 +166,50 @@ function Invoke-Teardown([switch]$RemoveConfig) {
     & (Join-Path $Root 'Remove-NanoAzure.ps1') @p
 }
 
+function New-AgentOneLiner {
+    if (-not (Test-Path $AgentFile)) { Write-Host 'No config\agent.json yet - deploy first.'; return }
+    $json = (Get-Content -Raw $AgentFile | ConvertFrom-Json) | ConvertTo-Json -Compress
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
+    $url = "https://raw.githubusercontent.com/$($Settings.Repo)/main/Install-NanoAgent.ps1"
+    $line = "`$env:NANO_CONFIG_B64='$b64'; `$env:NANO_AUTOSTART='1'; irm $url | iex"
+
+    # Is the installer reachable anonymously (i.e. is the repo public)?
+    try {
+        Invoke-WebRequest $url -UseBasicParsing -Method Head -TimeoutSec 15 | Out-Null
+        Write-Host "Installer reachable: $url" -ForegroundColor Green
+    }
+    catch {
+        Write-Host "WARNING: $url is not reachable anonymously." -ForegroundColor Yellow
+        Write-Host '         If the repo is private, irm on A-GUI will fail (404). Make it public, or' -ForegroundColor Yellow
+        Write-Host '         copy the repo folder + agent.json to A-GUI and run Install-NanoAgent.ps1 there.' -ForegroundColor Yellow
+    }
+    try {
+        Set-Clipboard -Value $line
+        Write-Host "Copied to clipboard ($($line.Length) chars). Paste into PowerShell on A-GUI." -ForegroundColor Green
+    }
+    catch { Write-Host 'Could not use the clipboard - copy the line below.' -ForegroundColor Yellow }
+    Write-Host ''
+    if ((Read-Host 'Show the command here? It contains the secret (y/N)') -eq 'y') {
+        Write-Host ''
+        Write-Host $line
+    }
+    Write-Host ''
+    Write-Host 'On A-GUI the installer removes the command from PowerShell history once it has read it.' -ForegroundColor DarkGray
+}
+
 function Edit-Settings {
-    foreach ($k in @('ResourceGroup', 'Location', 'Sku', 'Group')) {
+    foreach ($k in @('ResourceGroup', 'Location', 'Sku', 'Group', 'Repo')) {
         $hint = switch ($k) {
             'Sku' { ' (Free_F1 | Standard_S1)' }
             'Group' { ' (must start lab- or sup-)' }
+            'Repo' { ' (owner/name on GitHub)' }
             default { '' }
         }
         $v = Read-Host "$k$hint [$($Settings[$k])]"
         if ($v) {
             if ($k -eq 'Sku' -and $v -notin 'Free_F1', 'Standard_S1') { Write-Host '  ignored: invalid tier'; continue }
             if ($k -eq 'Group' -and $v -notmatch '^(lab|sup)-[A-Za-z0-9_-]{1,60}$') { Write-Host '  ignored: invalid group'; continue }
+            if ($k -eq 'Repo' -and $v -notmatch '^[\w.-]+/[\w.-]+$') { Write-Host '  ignored: use owner/name'; continue }
             $Settings[$k] = $v
         }
     }
@@ -201,6 +234,7 @@ while ($true) {
     Write-Host '   6) Tear down       - delete Azure resources, keep config (redeploy later)'
     Write-Host '   7) Tear down + wipe config'
     Write-Host '   8) Rotate secrets  - new function key + new shared secret'
+    Write-Host '   9) Agent one-liner - irm | iex install command for A-GUI (to clipboard)'
     Write-Host '   S) Settings        - resource group, location, tier, group'
     Write-Host '   L) Azure login / choose subscription'
     Write-Host '   Q) Quit'
@@ -217,6 +251,7 @@ while ($true) {
             '6' { Invoke-Teardown }
             '7' { Invoke-Teardown -RemoveConfig }
             '8' { Invoke-Deploy -NewSecrets }
+            '9' { New-AgentOneLiner }
             'S' { Edit-Settings }
             'L' { Invoke-Login }
             'Q' { return }

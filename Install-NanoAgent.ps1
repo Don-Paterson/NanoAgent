@@ -4,7 +4,10 @@
     the agent files, a private venv, a Start shortcut and optional logon start.
 
 .EXAMPLE
-    # one-liner (agent.json fetched from a URL you control, e.g. a SAS link):
+    # one-liner - generate it with NanoAzure.ps1 option 9 (config travels inline, base64):
+    $env:NANO_CONFIG_B64='eyJu...'; $env:NANO_AUTOSTART='1'; irm https://raw.githubusercontent.com/Don-Paterson/NanoAgent/main/Install-NanoAgent.ps1 | iex
+
+    # or with agent.json fetched from a URL you control:
     $env:NANO_CONFIG_URL = 'https://.../agent.json'; $env:NANO_AUTOSTART = '1'
     irm https://raw.githubusercontent.com/Don-Paterson/NanoAgent/main/Install-NanoAgent.ps1 | iex
 
@@ -28,6 +31,33 @@ $ProgressPreference = 'SilentlyContinue'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $PyVersion = '3.12.10'
 
+function Remove-SecretFromHistory {
+    # The one-liner contains the shared secret: scrub it from PSReadLine's saved and in-memory history
+    try {
+        $hp = (Get-PSReadLineOption -ErrorAction Stop).HistorySavePath
+        if ($hp -and (Test-Path $hp)) {
+            $lines = @(Get-Content $hp)
+            $keep = @($lines | Where-Object { $_ -notmatch 'NANO_CONFIG_B64' })
+            if ($keep.Count -ne $lines.Count) {
+                Set-Content -Path $hp -Value $keep -Encoding UTF8
+                Write-Host '   removed the install command from PowerShell history'
+            }
+        }
+        [Microsoft.PowerShell.PSConsoleReadLine]::ClearHistory()
+    }
+    catch { }
+    Clear-History -ErrorAction SilentlyContinue
+}
+
+function Stop-RunningAgent {
+    Get-CimInstance Win32_Process -Filter "Name='python.exe' OR Name='pythonw.exe'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -like '*nano_agent.py*' } |
+        ForEach-Object {
+            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            Write-Host "   stopped running agent (PID $($_.ProcessId))"
+        }
+}
+
 function Find-Python {
     foreach ($c in @('py -3.12', 'py -3', 'python')) {
         $exe, $arg = $c -split ' ', 2
@@ -42,6 +72,19 @@ function Find-Python {
 }
 
 Write-Host '== NanoAgent installer' -ForegroundColor Cyan
+# Read an inline config first so the secret is out of the environment as early as possible
+$inlineConfig = $null
+if ($env:NANO_CONFIG_B64) {
+    try {
+        $inlineConfig = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:NANO_CONFIG_B64.Trim()))
+        $o = $inlineConfig | ConvertFrom-Json
+    }
+    catch { throw 'NANO_CONFIG_B64 is not valid base64-encoded JSON (re-copy it from NanoAzure.ps1 option 9)' }
+    foreach ($k in 'negotiate_url', 'group', 'secret') { if (-not $o.$k) { throw "inline config is missing '$k'" } }
+    Remove-Item Env:NANO_CONFIG_B64 -ErrorAction SilentlyContinue
+    Remove-SecretFromHistory
+}
+Stop-RunningAgent        # a running agent locks files in the venv during an upgrade
 $py = Find-Python
 if (-not $py) {
     Write-Host "   Python not found - installing $PyVersion (per-user, silent)"
@@ -90,16 +133,24 @@ if (-not (Test-Path "$venv\Scripts\python.exe")) { & $py -m venv $venv }
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed' }
 
 $cfg = Join-Path $InstallDir 'agent.json'
-if ($ConfigUrl) {
+if ($inlineConfig) {
+    Write-Host '== Writing agent.json from the inline config'
+    if (Test-Path $cfg) { Remove-Item $cfg -Force }      # previous copy may be read-only for us
+    [IO.File]::WriteAllText($cfg, $inlineConfig, (New-Object Text.UTF8Encoding $false))
+}
+elseif ($ConfigUrl) {
+    if (Test-Path $cfg) { Remove-Item $cfg -Force }
     Write-Host '== Downloading agent.json'
     Invoke-WebRequest $ConfigUrl -OutFile $cfg
 }
-elseif (-not (Test-Path $cfg) -and $PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'agent.json'))) {
+elseif ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'agent.json')) -and
+    (Join-Path $PSScriptRoot 'agent.json') -ne $cfg) {
+    if (Test-Path $cfg) { Remove-Item $cfg -Force }
     Copy-Item (Join-Path $PSScriptRoot 'agent.json') $cfg
 }
 if (Test-Path $cfg) {
     # agent.json holds the shared secret: restrict it to the current user + SYSTEM + Administrators
-    icacls $cfg /inheritance:r /grant:r "${env:USERNAME}:R" 'SYSTEM:F' 'Administrators:F' | Out-Null
+    icacls $cfg /inheritance:r /grant:r "${env:USERNAME}:M" 'SYSTEM:F' 'Administrators:F' | Out-Null
 }
 else {
     Write-Warning "No agent.json yet - put one in $InstallDir, or run Start-NanoAgent.cmd --support with a negotiate URL."
