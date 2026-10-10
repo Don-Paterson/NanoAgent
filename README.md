@@ -29,6 +29,8 @@ group and sends signed commands; results come back in well under a second.
 | `Uninstall-NanoAgent.ps1` | A-GUI | Stops the agent, removes the logon task and `C:\NanoAgent` |
 | `Remove-NanoAzure.ps1` | your PC | Deletes everything in Azure (one resource group) |
 | `NanoAzure.ps1` | your PC | **Menu** for all of the above: status, deploy, test, tear down, rotate, settings |
+| `nano_session.py` | Claude | Persistent session (~0.4 s per action) for a Claude chat driving A-GUI |
+| `CLAUDE.md` | Claude | How a fresh Claude session connects to and drives A-GUI |
 
 ## Security model
 
@@ -62,7 +64,7 @@ Needs the Azure CLI and ideally Azure Functions Core Tools (`func`). The easy wa
 
 This opens a menu covering login and subscription choice, status, deploy, testing the
 Function and the agent, opening the config folder, tear down (keeping or wiping the
-config), rotating secrets, the A-GUI install one-liner, and settings. Resource group, location, tier and group are
+config), rotating secrets, the A-GUI install one-liner, today's Web PubSub usage (U), and settings. Resource group, location, tier and group are
 remembered in `config\settings.json`. The scripts below do the same things unattended.
 
 ```powershell
@@ -182,7 +184,13 @@ with NanoClient.from_config("controller.json") as a:
     a.click_image("demos/anchors/publish.png", timeout=15)
 ```
 
-### Let Claude drive
+### Let Claude drive from a chat (no API key)
+
+In a Claude chat linked to the laptop (with this folder connected, and the two Azure hosts in
+Claude's allowed domains), ask Claude to read `CLAUDE.md` and connect. It runs
+`nano_session.py` and drives A-GUI directly, using your Claude plan, with no API key.
+
+### Let Claude drive unattended (API)
 
 ```powershell
 $env:ANTHROPIC_API_KEY = '...'

@@ -197,6 +197,40 @@ function New-AgentOneLiner {
     Write-Host 'On A-GUI the installer removes the command from PowerShell history once it has read it.' -ForegroundColor DarkGray
 }
 
+function Show-Usage {
+    if (-not (Get-AzAccount)) { Write-Host 'Log in first (option L).'; return }
+    if (-not (Test-RgExists)) { Write-Host 'Not deployed.'; return }
+    $id = az resource list -g $Settings.ResourceGroup --resource-type Microsoft.SignalRService/WebPubSub --query '[0].id' -o tsv
+    if (-not $id) { Write-Host 'No Web PubSub resource found.'; return }
+    $metric = az monitor metrics list-definitions --resource $id --query "[?name.localizedValue=='Outbound Traffic'].name.value | [0]" -o tsv
+    if (-not $metric) { $metric = 'OutboundTraffic' }
+    $now = [DateTime]::UtcNow
+    $start = $now.Date                                 # the Free tier day runs in UTC
+    $j = az monitor metrics list --resource $id --metric $metric --interval PT1H --aggregation Total `
+        --start-time $start.ToString('yyyy-MM-ddTHH:mm:ssZ') --end-time $now.ToString('yyyy-MM-ddTHH:mm:ssZ') -o json | ConvertFrom-Json
+    $points = @($j.value[0].timeseries[0].data | Where-Object { $_.total -ne $null })
+    $bytes = ($points | Measure-Object -Property total -Sum).Sum
+    if (-not $bytes) { $bytes = 0 }
+    $msgs = [math]::Ceiling($bytes / 2048)
+    $limit = if ($Settings.Sku -eq 'Free_F1') { 20000 } else { 1000000 }
+    $pct = [math]::Round(100 * $msgs / $limit, 1)
+    $colour = if ($pct -ge 90) { 'Red' } elseif ($pct -ge 60) { 'Yellow' } else { 'Green' }
+    Write-Host ("Today (UTC, since {0:HH:mm} UK time):" -f $start.ToLocalTime())
+    Write-Host ("  Outbound traffic : {0:N0} KB" -f ($bytes / 1KB))
+    Write-Host ("  Billed messages  : ~{0:N0} of {1:N0} per day  ({2}%)" -f $msgs, $limit, $pct) -ForegroundColor $colour
+    Write-Host ("  Remaining        : ~{0:N0} messages, roughly {1:N0} screenshots" -f ($limit - $msgs), (($limit - $msgs) / 50))
+    if ($points.Count) {
+        Write-Host ''
+        Write-Host '  Hour (UK)  Messages'
+        foreach ($p in ($points | Select-Object -Last 8)) {
+            $m = [math]::Ceiling($p.total / 2048)
+            Write-Host ("  {0:HH:mm}      {1,8:N0}  {2}" -f ([DateTime]$p.timeStamp).ToLocalTime(), $m, ('#' * [math]::Min(40, [math]::Ceiling($m / 100))))
+        }
+    }
+    Write-Host ''
+    Write-Host 'Estimate from the Outbound Traffic metric (2 KB = 1 message); metrics lag a few minutes.' -ForegroundColor DarkGray
+}
+
 function Edit-Settings {
     foreach ($k in @('ResourceGroup', 'Location', 'Sku', 'Group', 'Repo')) {
         $hint = switch ($k) {
@@ -235,6 +269,7 @@ while ($true) {
     Write-Host '   7) Tear down + wipe config'
     Write-Host '   8) Rotate secrets  - new function key + new shared secret'
     Write-Host '   9) Agent one-liner - irm | iex install command for A-GUI (to clipboard)'
+    Write-Host '   U) Usage today     - Web PubSub messages used vs the daily limit'
     Write-Host '   S) Settings        - resource group, location, tier, group'
     Write-Host '   L) Azure login / choose subscription'
     Write-Host '   Q) Quit'
@@ -252,6 +287,7 @@ while ($true) {
             '7' { Invoke-Teardown -RemoveConfig }
             '8' { Invoke-Deploy -NewSecrets }
             '9' { New-AgentOneLiner }
+            'U' { Show-Usage }
             'S' { Edit-Settings }
             'L' { Invoke-Login }
             'Q' { return }

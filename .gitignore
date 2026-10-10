@@ -9,3 +9,4 @@ function/local.settings.json
 function/.python_packages/
 # screenshots taken with nano_cli (may show lab secrets on screen)
 *.jpg
+nano_work/
