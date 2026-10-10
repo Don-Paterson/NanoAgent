@@ -97,7 +97,7 @@ if (-not $py) {
 Write-Host "   python: $py"
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-$files = 'nano_agent.py', 'nano_proto.py', 'requirements-agent.txt', 'Install-NanoAgent.ps1', 'Uninstall-NanoAgent.ps1'
+$files = 'nano_agent.py', 'nano_proto.py', 'requirements-agent.txt', 'Install-NanoAgent.ps1', 'Uninstall-NanoAgent.ps1', 'Restart-NanoAgent.ps1'
 if ($PSScriptRoot -and (Test-Path (Join-Path $PSScriptRoot 'nano_agent.py'))) {
     # Run from a copy of the repo (USB, shared folder, Skillable file drop): no download needed
     Write-Host "== Copying agent files from $PSScriptRoot -> $InstallDir"

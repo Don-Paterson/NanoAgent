@@ -52,7 +52,7 @@ from PIL import Image
 from nano_proto import (PROTO_VERSION, PubSubLink, ReplayGuard, key_from_secret, sign,
                         support_session, verify)
 
-__version__ = "1.0.0"
+__version__ = "1.1.2"
 pyautogui.FAILSAFE = False      # Claude may legitimately click (0,0); use the kill hotkey instead
 pyautogui.PAUSE = 0.03
 log = logging.getLogger("nano.agent")
@@ -302,34 +302,68 @@ if IS_WIN:
 
 # =========================================================================== banner / hotkey
 class Banner:
-    """Small click-through, capture-excluded 'remote control active' strip (Windows)."""
+    """Small click-through 'remote control active' tag (Windows).
 
-    def __init__(self, text: str):
+    position: taskbar (default: in the empty middle of a bottom taskbar, covering no app
+    content), bottom-right / bottom-left (just above the taskbar), top-right, top.
+    On Windows 10 2004+ it is excluded from screen capture.  Older builds (e.g. 1809)
+    would capture it as a black box, so there it stays visible instead - small and
+    in a corner, where it doesn't hide anything that matters."""
+
+    def __init__(self, text: str, position: str = "taskbar"):
         import tkinter as tk
         self.tk = tk
+        self.position = position
         self.root = tk.Tk()
+        self.root.title("NanoAgent")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.attributes("-alpha", 0.85)
         self.var = tk.StringVar(value=text)
         tk.Label(self.root, textvariable=self.var, bg="#b3261e", fg="white",
-                 font=("Segoe UI", 9, "bold"), padx=10, pady=2).pack()
-        self.root.update_idletasks()
-        w = self.root.winfo_reqwidth()
-        self.root.geometry(f"+{(self.root.winfo_screenwidth() - w) // 2}+0")
-        self.root.update()
+                 font=("Segoe UI", 8, "bold"), padx=6, pady=1).pack()
+        self._place()
         if IS_WIN:
             try:
                 hwnd = int(self.root.wm_frame(), 16)        # the real top-level HWND
                 ex = user32.GetWindowLongW(hwnd, -20)
                 # LAYERED | TRANSPARENT (click-through) | TOOLWINDOW | NOACTIVATE
                 user32.SetWindowLongW(hwnd, -20, ex | 0x80000 | 0x20 | 0x80 | 0x08000000)
-                user32.SetWindowDisplayAffinity(hwnd, 0x11)   # WDA_EXCLUDEFROMCAPTURE (Win10 2004+)
+                if sys.getwindowsversion().build >= 19041:
+                    user32.SetWindowDisplayAffinity(hwnd, 0x11)   # WDA_EXCLUDEFROMCAPTURE
             except Exception:
                 pass
 
+    def _work_area(self):
+        if IS_WIN:
+            r = wintypes.RECT()
+            if user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0):   # SPI_GETWORKAREA
+                return r.left, r.top, r.right, r.bottom
+        return 0, 0, self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+
+    def _place(self):
+        self.root.update_idletasks()
+        w, h = self.root.winfo_reqwidth(), self.root.winfo_reqheight()
+        l, t, r, b = self._work_area()
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        pos = self.position
+        if pos == "taskbar":
+            if sh - b >= h:                     # bottom taskbar: right-hand side of the empty
+                x = max(l, sw - w - int(sw * 0.13))   # middle, clear of pinned icons and the tray
+                self.root.geometry(f"+{x}+{b + (sh - b - h) // 2}")
+                self.root.update()
+                return
+            pos = "bottom-right"                # taskbar elsewhere / auto-hidden
+        x = {"bottom-left": l, "top": (l + r - w) // 2}.get(pos, r - w)
+        y = t if pos.startswith("top") else b - h
+        self.root.geometry(f"+{x}+{y}")
+        self.root.update()
+
     def set(self, text: str):
-        self.root.after(0, self.var.set, text)
+        def go():
+            self.var.set(text)
+            self._place()
+        self.root.after(0, go)
 
     def run(self, stop_flag: threading.Event):
         def poll():
@@ -374,7 +408,7 @@ class Agent:
 
     # ---- transport callbacks
     async def on_connect(self):
-        self.status_cb(f"NanoAgent: connected [{self.group}]  -  Ctrl+Alt+Shift+K to stop")
+        self.status_cb(f"NanoAgent [{self.group}] remote control ON · Ctrl+Alt+Shift+K stops")
         await self.send({"kind": "hello", "v": PROTO_VERSION, "ts": time.time(), "info": self.info()})
 
     async def on_data(self, data: dict):
@@ -410,7 +444,6 @@ class Agent:
             self.last_activity = time.time()
             short = {k: (v if len(str(v)) < 120 else f"<{len(str(v))} chars>") for k, v in args.items()}
             log.info("cmd %s %s", op, short)
-            self.status_cb(f"NanoAgent: {op}  [{self.group}]  -  Ctrl+Alt+Shift+K to stop")
             try:
                 fn = getattr(self, f"op_{op}", None)
                 if fn is None:
@@ -696,7 +729,7 @@ def main(argv=None):
     banner = None
     if IS_WIN and not a.no_banner:
         try:
-            banner = Banner(f"NanoAgent: connecting [{group}]")
+            banner = Banner(f"NanoAgent [{group}] connecting...", cfg.get("banner_position", "taskbar"))
         except Exception as e:
             log.warning("banner unavailable: %s", e)
 

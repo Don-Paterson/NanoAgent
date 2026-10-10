@@ -7,3 +7,5 @@ __pycache__/
 runs/
 function/local.settings.json
 function/.python_packages/
+# screenshots taken with nano_cli (may show lab secrets on screen)
+*.jpg

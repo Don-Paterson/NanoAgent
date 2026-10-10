@@ -41,9 +41,10 @@ group and sends signed commands; results come back in well under a second.
   Messages that fail decryption are dropped and logged; commands older than 2 minutes or
   replayed are rejected. The group name is bound into the encryption, so a message can't
   be replayed into another group.
-* **Visible and stoppable.** On Windows a red "NanoAgent: …" strip sits at the top of the
-  screen (click-through and excluded from screenshots, so it never confuses Claude).
-  **Ctrl+Alt+Shift+K** kills the agent instantly.
+* **Visible and stoppable.** On Windows a small red "NanoAgent [group] remote control ON" tag
+  sits in the empty part of the taskbar (`banner_position` in agent.json: `taskbar`,
+  `bottom-right`, `bottom-left`, `top-right`, `top`). It's click-through, and on Windows 10
+  2004+ it's excluded from screenshots. **Ctrl+Alt+Shift+K** kills the agent instantly.
 * **Audited.** Every command is logged to `nano_agent.log` next to the agent.
 * `--no-run` / `--no-files` (or `allow_run` / `allow_files` in agent.json) remove PowerShell
   and file transfer for less trusted situations.
@@ -134,6 +135,9 @@ and starts the agent.
 
 Manual run: `C:\NanoAgent\Start-NanoAgent.cmd`
 Remove: `C:\NanoAgent\Uninstall-NanoAgent.ps1` (stops it, removes the task and the folder)
+Update in place: put a new `nano_agent.py.new` in `C:\NanoAgent` (e.g. with `nano_cli.py put`) and
+run `Restart-NanoAgent.ps1` detached; it swaps the file in and restarts the agent:
+`nano_cli.py run "Start-Process powershell -WindowStyle Hidden -ArgumentList '-File','C:\NanoAgent\Restart-NanoAgent.ps1'"`
 
 ## 3. Drive it
 
