@@ -57,7 +57,7 @@ pyautogui.FAILSAFE = False      # Claude may legitimately click (0,0); use the k
 pyautogui.PAUSE = 0.03
 log = logging.getLogger("nano.agent")
 HERE = Path(__file__).resolve().parent
-MAX_IMAGE_BYTES = 700_000       # stay well under the Web PubSub 1 MB message limit after base64
+MAX_IMAGE_BYTES = 560_000       # base64 + encryption must stay under the 1 MB Web PubSub message limit
 MAX_FILE_BYTES = 512 * 1024
 
 
@@ -370,7 +370,7 @@ class Agent:
         self.queue: asyncio.Queue = asyncio.Queue()
         self.status_cb = status_cb or (lambda s: None)
         self.last_activity = time.time()
-        self.link = PubSubLink(cfg["negotiate_url"], "agent", group, self.on_data, self.on_connect)
+        self.link = PubSubLink(cfg["negotiate_url"], "agent", group, key, self.on_data, self.on_connect)
 
     # ---- transport callbacks
     async def on_connect(self):
@@ -380,7 +380,7 @@ class Agent:
     async def on_data(self, data: dict):
         if data.get("kind") != "cmd":
             return
-        if not verify(data, self.key):
+        if not verify(data, self.key):              # decrypted fine but signature wrong: shouldn't happen
             log.warning("rejected command with bad signature (op=%s)", data.get("op"))
             return                       # never answer unauthenticated senders
         err = self.guard.check(data)

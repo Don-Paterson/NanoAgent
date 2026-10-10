@@ -48,7 +48,7 @@ class NanoClient:
         self._pending: dict[str, asyncio.Future] = {}
         self._loop = asyncio.new_event_loop()
         self._stop: Optional[asyncio.Event] = None
-        self._link = PubSubLink(negotiate_url, "controller", group, self._on_data)
+        self._link = PubSubLink(negotiate_url, "controller", group, key, self._on_data)
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name="nano-client")
         self._thread.start()

@@ -9,29 +9,42 @@ envelopes inside sendToGroup messages:
     result   {"kind":"res","v":1,"id":<same id>,"ts":..,"ok":true|false,"result":{...}|"error":"..","sig":..}
     hello    {"kind":"hello","v":1,"ts":..,"info":{...},"sig":..}
 
-Every envelope is HMAC-SHA256 signed with a pre-shared secret, so holding a
-Web PubSub token for the group is NOT enough to drive the agent.  Commands
-older than MAX_SKEW seconds, or with a repeated id, are rejected.
+Every envelope is HMAC-SHA256 signed with a pre-shared secret, then
+zlib-compressed and encrypted with AES-256-GCM (key derived from the same
+secret, group name bound in as associated data).  What actually crosses Web
+PubSub is only:
+
+    {"kind":"enc","v":1,"n":<nonce b64>,"c":<ciphertext b64>}
+
+So holding a Web PubSub token for the group (e.g. a leaked function key) lets
+someone see that traffic exists and how big it is - not screenshots, commands
+or output - and they cannot inject anything.  Commands older than MAX_SKEW
+seconds, or with a repeated id, are rejected.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import os
 import time
 import urllib.parse
 import urllib.request
 import uuid
+import zlib
 from typing import Awaitable, Callable, Optional
 
 import websockets
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 PROTO_VERSION = 1
 SUBPROTOCOL = "json.webpubsub.azure.v1"
 MAX_SKEW = 120          # seconds a signed command stays valid
 MAX_WS_MESSAGE = 16 * 1024 * 1024
+MAX_PLAINTEXT = 32 * 1024 * 1024   # decompression-bomb guard
 
 log = logging.getLogger("nano")
 
@@ -82,6 +95,40 @@ def make_cmd(op: str, args: dict, key: bytes) -> dict:
                  "ts": time.time(), "op": op, "args": args or {}}, key)
 
 
+# --------------------------------------------------------------------------- encryption
+def _enc_key(key: bytes) -> bytes:
+    return hmac.new(key, b"nano-enc-v1", hashlib.sha256).digest()
+
+
+def _aad(group: str) -> bytes:
+    return f"nano:{group}".encode("utf-8")
+
+
+def seal(msg: dict, key: bytes, group: str) -> dict:
+    """Compress + AES-256-GCM encrypt a (signed) envelope for the wire."""
+    nonce = os.urandom(12)
+    ct = AESGCM(_enc_key(key)).encrypt(nonce, zlib.compress(canonical(msg), 6), _aad(group))
+    return {"kind": "enc", "v": PROTO_VERSION,
+            "n": base64.b64encode(nonce).decode("ascii"), "c": base64.b64encode(ct).decode("ascii")}
+
+
+def unseal(data: dict, key: bytes, group: str) -> Optional[dict]:
+    """Inverse of seal(); None for plaintext, tampered, wrong-key or wrong-group messages."""
+    if data.get("kind") != "enc":
+        return None
+    try:
+        nonce = base64.b64decode(data["n"])
+        raw = AESGCM(_enc_key(key)).decrypt(nonce, base64.b64decode(data["c"]), _aad(group))
+        d = zlib.decompressobj()
+        plain = d.decompress(raw, MAX_PLAINTEXT)
+        if d.unconsumed_tail:
+            return None
+        msg = json.loads(plain.decode("utf-8"))
+        return msg if isinstance(msg, dict) else None
+    except Exception:
+        return None
+
+
 class ReplayGuard:
     """Rejects stale or repeated command ids."""
 
@@ -128,9 +175,11 @@ class PubSubLink:
     on_data(data) is awaited for every group message (already JSON-decoded).
     on_connect() is awaited after each successful (re)join."""
 
-    def __init__(self, negotiate_url: str, role: str, group: str,
+    def __init__(self, negotiate_url: str, role: str, group: str, key: bytes,
                  on_data: Callable[[dict], Awaitable[None]],
                  on_connect: Optional[Callable[[], Awaitable[None]]] = None):
+        self.key = key
+        self.dropped = 0
         self.negotiate_url = negotiate_url
         self.role = role
         self.group = group
@@ -197,6 +246,12 @@ class PubSubLink:
                     except ValueError:
                         continue
                 if isinstance(data, dict):
+                    data = unseal(data, self.key, self.group)
+                    if data is None:
+                        self.dropped += 1
+                        log.warning("link: dropped message that failed decryption "
+                                    "(wrong secret, tampered, or plaintext) [%d so far]", self.dropped)
+                        continue
                     try:
                         await self.on_data(data)
                     except Exception:
@@ -209,6 +264,6 @@ class PubSubLink:
         if ws is None or not self.connected.is_set():
             raise ConnectionError("not connected to relay")
         frame = json.dumps({"type": "sendToGroup", "group": self.group, "dataType": "json",
-                            "data": data, "noEcho": True})
+                            "data": seal(data, self.key, self.group), "noEcho": True})
         async with self._send_lock:
             await ws.send(frame)

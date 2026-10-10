@@ -1,5 +1,6 @@
 websockets>=14
 pillow>=10
+cryptography>=42
 anthropic>=0.70
 # optional, for image anchors (find_image / click_image / wait_image):
 opencv-python

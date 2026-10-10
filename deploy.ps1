@@ -6,6 +6,12 @@
 .EXAMPLE
     .\deploy.ps1 -ResourceGroup rg-nanoagent -Location uksouth
     .\deploy.ps1 -ResourceGroup rg-nanoagent -Sku Standard_S1 -Group lab-a-gui
+    .\deploy.ps1 -NewSecrets          # rotate: new function key + new shared secret
+
+    Redeploying after Remove-NanoAzure.ps1 (same resource group name, same
+    subscription) gives the same host name, and the existing function key and
+    secret in config\controller.json are reused - so an agent.json already on
+    A-GUI keeps working.  Tear down when idle, redeploy when needed.
 
 .NOTES
     Needs: Azure CLI (az login done), and either Azure Functions Core Tools (func)
@@ -18,7 +24,8 @@ param(
     [string]$BaseName = 'nanoagent',
     [ValidateSet('Free_F1', 'Standard_S1')][string]$Sku = 'Free_F1',
     [string]$Group = 'lab-a-gui',
-    [string]$OutDir = (Join-Path $PSScriptRoot 'config')
+    [string]$OutDir = (Join-Path $PSScriptRoot 'config'),
+    [switch]$NewSecrets
 )
 $ErrorActionPreference = 'Stop'
 
@@ -26,6 +33,16 @@ function Invoke-Az {
     $out = & az @args
     if ($LASTEXITCODE -ne 0) { throw "az $($args -join ' ') failed" }
     $out
+}
+
+# Reuse key + secret from a previous deployment unless rotating
+$prev = $null
+$prevFile = Join-Path $OutDir 'controller.json'
+if (-not $NewSecrets -and (Test-Path $prevFile)) {
+    $prev = Get-Content -Raw $prevFile | ConvertFrom-Json
+    $prevKey = ([regex]::Match($prev.negotiate_url, 'code=([^&]+)')).Groups[1].Value
+    $prevHost = ([uri]$prev.negotiate_url).Host
+    Write-Host "== Reusing function key and secret from $prevFile (use -NewSecrets to rotate)"
 }
 
 Write-Host "== Resource group $ResourceGroup ($Location)" -ForegroundColor Cyan
@@ -55,19 +72,36 @@ try {
 }
 finally { Pop-Location }
 
-Write-Host "== Fetching function key" -ForegroundColor Cyan
 $key = $null
-for ($i = 0; $i -lt 12 -and -not $key; $i++) {
+if ($prev -and $prevKey) {
+    Write-Host "== Restoring previous function key" -ForegroundColor Cyan
+    for ($i = 0; $i -lt 12; $i++) {
+        az functionapp keys set -g $ResourceGroup -n $fnName --key-type functionKeys --key-name default --key-value $prevKey -o none 2>$null
+        if ($LASTEXITCODE -eq 0) { $key = $prevKey; break }
+        Start-Sleep 10
+    }
+    if (-not $key) { Write-Warning 'Could not restore the previous key; using the new one (agent.json must be redistributed).' }
+    if ($prevHost -and $prevHost -ne $fnHost) {
+        Write-Warning "Host changed ($prevHost -> $fnHost): agent.json must be redistributed."
+    }
+}
+Write-Host "== Fetching function key" -ForegroundColor Cyan
+for ($i = 0; $i -lt 12 -and -not $key; $i++) {   # skipped when restored above
     $key = az functionapp keys list -g $ResourceGroup -n $fnName --query functionKeys.default -o tsv 2>$null
     if (-not $key) { Start-Sleep 10 }
 }
 if (-not $key) { throw 'Could not read the function key - try again in a minute.' }
 $negotiate = "https://$fnHost/api/negotiate?code=$key"
 
-# 32-byte shared secret for HMAC signing (PS 5.1 compatible)
-$bytes = New-Object byte[] 32
-[Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
-$secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+# 32-byte shared secret for signing + encryption (PS 5.1 compatible)
+if ($prev -and $prev.secret) {
+    $secret = $prev.secret
+}
+else {
+    $bytes = New-Object byte[] 32
+    [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+    $secret = -join ($bytes | ForEach-Object { $_.ToString('x2') })
+}
 
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $agent = [ordered]@{

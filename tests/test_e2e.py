@@ -157,7 +157,63 @@ try:
         except NanoError as e:
             check("bad-secret client ignored", "no reply" in str(e), e)
     log_text = (tmp / "agent.log").read_text()
-    check("agent logged bad signature", "bad signature" in log_text)
+    check("agent logged failed decryption", "failed decryption" in log_text)
+
+    print("== eavesdropper with a valid relay token sees only ciphertext")
+    import asyncio as _a
+    import websockets as _ws
+    from nano_proto import negotiate, SUBPROTOCOL
+
+    async def eavesdrop():
+        url = negotiate(NEG, "controller", GROUP)
+        seen = []
+        async with _ws.connect(url, subprotocols=[SUBPROTOCOL], max_size=16 * 1024 * 1024) as spy:
+            await spy.send(json.dumps({"type": "joinGroup", "group": GROUP, "ackId": 1}))
+            await _a.sleep(0.5)
+            # also try to inject an unencrypted (but otherwise well-formed) command
+            from nano_proto import make_cmd
+            await spy.send(json.dumps({"type": "sendToGroup", "group": GROUP, "dataType": "json",
+                                       "noEcho": True, "data": make_cmd("run", {"command": "echo pwned"}, key_from_secret(SECRET))}))
+            def legit():
+                with NanoClient(NEG, GROUP, key_from_secret(SECRET), timeout=15) as c2:
+                    c2.wait_for_agent(20)
+                    c2.run("echo TOPSECRET-OUTPUT")
+                    c2.screenshot()
+            await _a.to_thread(legit)
+            try:
+                while True:
+                    seen.append(json.loads(await _a.wait_for(spy.recv(), 1.0)))
+            except (_a.TimeoutError, TimeoutError):
+                pass
+        return seen
+    frames = _a.run(eavesdrop())
+    datas = [f["data"] for f in frames if f.get("type") == "message"]
+    blob = json.dumps(datas)
+    check("spy received traffic", len(datas) >= 4, len(datas))
+    check("all traffic is enc envelopes", datas and all(set(d) == {"kind", "v", "n", "c"} and d["kind"] == "enc" for d in datas))
+    check("no plaintext leaks (output, op names, image)", "TOPSECRET" not in blob and '"op"' not in blob
+          and "screenshot" not in blob and "/9j/" not in blob)
+    check("plaintext injection not executed", "pwned" not in (tmp / "agent.log").read_text())
+
+    print("== crypto unit checks")
+    from nano_proto import seal, unseal
+    k = key_from_secret(SECRET)
+    env = seal({"kind": "cmd", "x": 1}, k, "lab-a")
+    check("round trip", unseal(env, k, "lab-a") == {"kind": "cmd", "x": 1})
+    check("wrong group rejected (AAD)", unseal(env, k, "lab-b") is None)
+    check("wrong key rejected", unseal(env, key_from_secret("z" * 64), "lab-a") is None)
+    bad = dict(env); bad["c"] = bad["c"][:-6] + ("AAAAAA" if not bad["c"].endswith("AAAAAA") else "BBBBBB")
+    check("tampered ciphertext rejected", unseal(bad, k, "lab-a") is None)
+    # worst case frame size: pure noise screenshot at max_long_edge 1280
+    import random
+    from PIL import Image as _I
+    noise = _I.frombytes("RGB", (1280, 800), random.randbytes(1280 * 800 * 3))
+    import nano_agent
+    img = nano_agent.Screen.encode(noise, "jpeg", 70)
+    frame = json.dumps({"type": "sendToGroup", "group": "lab-a-gui", "dataType": "json", "noEcho": True,
+                        "data": seal({"kind": "res", "v": 1, "id": "x" * 32, "ts": 1.0, "ok": True,
+                                      "result": {"image": img}, "sig": "s" * 64}, k, "lab-a-gui")})
+    check(f"worst-case screenshot frame < 1 MB ({len(frame) // 1024} KB)", len(frame) < 1_000_000)
 
     print("== claude_driver batch handling (fake Claude blocks)")
     import claude_driver as cd

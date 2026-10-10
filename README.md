@@ -26,14 +26,20 @@ group and sends signed commands; results come back in well under a second.
 | `function/`, `infra/main.bicep`, `deploy.ps1` | Azure | Web PubSub + negotiate Function |
 | `local_relay.py` | anywhere | Web PubSub look-alike for LAN use and testing (no Azure needed) |
 | `Install-NanoAgent.ps1` | A-GUI | Installs Python (if missing), venv, agent, optional logon start |
+| `Uninstall-NanoAgent.ps1` | A-GUI | Stops the agent, removes the logon task and `C:\NanoAgent` |
+| `Remove-NanoAzure.ps1` | your PC | Deletes everything in Azure (one resource group) |
 
 ## Security model
 
 * **Two independent locks.** The negotiate function key gets you a Web PubSub token for
-  one group only (`lab-*` / `sup-*`), valid 60 minutes. Every command is also
-  **HMAC-SHA256 signed** with a 32-byte shared secret held only in `agent.json` /
-  `controller.json`. Unsigned or wrongly signed commands are silently ignored and logged;
-  commands older than 2 minutes or replayed are rejected.
+  one group only (`lab-*` / `sup-*`), valid 60 minutes. Every message is also
+  **HMAC-SHA256 signed and AES-256-GCM encrypted** end to end with keys derived from a
+  32-byte shared secret held only in `agent.json` / `controller.json` (zlib-compressed
+  first, which also cuts Web PubSub billing). Azure, and anyone holding a leaked function
+  key, sees only `{"kind":"enc","n":…,"c":…}` blobs: no screenshots, commands or output.
+  Messages that fail decryption are dropped and logged; commands older than 2 minutes or
+  replayed are rejected. The group name is bound into the encryption, so a message can't
+  be replayed into another group.
 * **Visible and stoppable.** On Windows a red "NanoAgent: …" strip sits at the top of the
   screen (click-through and excluded from screenshots, so it never confuses Claude).
   **Ctrl+Alt+Shift+K** kills the agent instantly.
@@ -64,6 +70,31 @@ is typically 100–250 KB, i.e. roughly 50–125 billed messages. Free (20k mess
 calculator for the current daily unit price. Lower `jpeg_quality` or `max_long_edge` in
 agent.json if you want smaller screenshots.
 
+### What lives in Azure, and removing it
+
+Everything is in one resource group. Idle cost is effectively zero: Web PubSub Free has
+no charge, the Function scales to zero, and storage holds only a few MB. Nothing passing
+through the agent (screenshots, commands, output) is ever stored in Azure; Web PubSub
+relays messages and keeps nothing.
+
+| Resource | What it holds | Persists? |
+|---|---|---|
+| Web PubSub | nothing (live relay only) | the instance, idle |
+| Function App + plan | negotiate code | scales to zero |
+| Storage account | function code package (a few MB) and the Functions host's key/lock blobs | yes |
+| Managed identity + role assignments | lets the Function read its storage without keys | yes |
+
+```powershell
+.\Remove-NanoAzure.ps1                  # deletes the resource group (confirm prompt)
+.\deploy.ps1                            # later: same URL, key and secret, A-GUI keeps working
+.\deploy.ps1 -NewSecrets                # rotate key + secret (redistribute agent.json)
+.\Remove-NanoAzure.ps1 -RemoveConfig    # also delete local config\*.json
+```
+
+Redeploying reuses `config\controller.json`. With the same resource group name and
+subscription, the Function host name is the same and the old function key is set
+again, so you can tear Azure down whenever it's idle.
+
 ## 2. Install the agent on A-GUI
 
 ```powershell
@@ -87,6 +118,7 @@ locks `agent.json` down to the current user, and with `-AutoStart` registers an
 interactive logon task (the agent must run in the desktop session to see the screen).
 
 Manual run: `C:\NanoAgent\Start-NanoAgent.cmd`
+Remove: `C:\NanoAgent\Uninstall-NanoAgent.ps1` (stops it, removes the task and the folder)
 
 ## 3. Drive it
 
@@ -195,5 +227,7 @@ Xvfb :99 -screen 0 1600x1000x24 &  DISPLAY=:99 python tests/test_e2e.py
 ```
 
 This runs the local relay, the agent and a Tk target window, then checks scaling, clicks,
-typing, keys, zoom, run, files, anchors, signature/replay rejection, and the Claude
+typing, keys, zoom, run, files, anchors, replay rejection, encryption (a spy with a valid
+relay token sees only ciphertext and can't inject; wrong key, wrong group and tampered
+messages are rejected; a worst-case screenshot fits the 1 MB frame limit), and the Claude
 driver's batch and loop handling against a scripted fake API.
