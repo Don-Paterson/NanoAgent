@@ -118,3 +118,9 @@ Before sending its key the agent checks who issued the Azure certificate (Micros
 If a firewall is inspecting HTTPS it refuses to connect and says so in the taskbar banner and log.
 In agent.json: `"tls_guard": "warn"` (log only) or `"off"`; `"tls_trusted_issuers": [...]` to extend.
 `op info` reports `tls_guard`, `tls`, `elevated`, `pwsh` and `jobs_running`.
+
+## Session survives shell resets (1.2.1)
+
+Any `nano_session.py` command now starts the background session itself, detached from the shell, if none is
+running (log: `nano_work/serve.log`), so a reset shell no longer kills it. Do not paste install one-liners,
+`agent.json` or `controller.json` into a chat or log: they hold the function key and shared secret.

@@ -3,7 +3,7 @@
 (built for Claude sessions driving A-GUI; see CLAUDE.md).  One background process holds
 the encrypted connection, so each command costs ~0.4 s instead of ~4 s.
 
-    python nano_session.py serve &                       # once; holds the connection
+    python nano_session.py serve                         # optional: any command starts it detached if none is running
     python nano_session.py shot [file]                   # screenshot (1280x720 jpeg)
     python nano_session.py peek [file]                   # cheaper screenshot (quality 40): about half the messages
     python nano_session.py zoom x0 y0 x1 y1 [file]       # full-res crop of a region
@@ -134,12 +134,35 @@ def serve():
             conn.sendall((json.dumps(res) + "\n").encode())
 
 
+def _connect():
+    """Connect to the session; if none is running, start one detached (it survives this shell)."""
+    def attempt():
+        s = socket.socket(socket.AF_UNIX)
+        try:
+            s.connect(SOCK)
+            return s
+        except OSError:
+            s.close()
+            return None
+    s = attempt()
+    if s:
+        return s
+    import subprocess
+    log = open(os.path.join(WORK, "serve.log"), "ab")
+    kw = {"start_new_session": True} if os.name == "posix" else {"creationflags": 0x00000200 | 0x00000008}
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), "serve"], stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, cwd=os.getcwd(), **kw)
+    print("[no session running: started one in the background]", file=sys.stderr)
+    for _ in range(90):
+        time.sleep(0.5)
+        s = attempt()
+        if s:
+            return s
+    sys.exit("could not start a session; see " + os.path.join(WORK, "serve.log"))
+
+
 def call(op, _t=90, **args):
-    s = socket.socket(socket.AF_UNIX)
-    try:
-        s.connect(SOCK)
-    except OSError:
-        sys.exit("no session - start one with: python nano_session.py serve &")
+    s = _connect()
     s.sendall((json.dumps({"op": op, "args": args, "timeout": _t}) + "\n").encode())
     res = json.loads(s.makefile().readline())
     u = res.get("usage")
