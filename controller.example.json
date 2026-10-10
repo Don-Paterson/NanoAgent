@@ -1,0 +1,5 @@
+{
+  "negotiate_url": "https://<function-host>/api/negotiate?code=<function key>",
+  "group": "lab-a-gui",
+  "secret": "<64 hex chars - same as agent.json>"
+}

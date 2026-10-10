@@ -1,0 +1,11 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
+    "WEBPUBSUB_CONNECTION": "Endpoint=https://<name>.webpubsub.azure.com;AccessKey=<key>;Version=1.0;",
+    "NANO_HUB": "nano",
+    "NANO_GROUP_PREFIXES": "lab-,sup-",
+    "NANO_TOKEN_MINUTES": "60"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "about": "Example demo script for 'nano_cli.py play'. Coordinates and anchor images are PLACEHOLDERS - capture your own with 'nano_cli.py shot' + 'nano_cli.py crop'.",
+  "steps": [
+    {"say": "Pin SmartConsole to a known position so fixed coordinates stay valid"},
+    {"place": ["SmartConsole", 0, 0, 1280, 760]},
+    {"sleep": 1},
+    {"say": "Open Objects > New Host (Ctrl+N style shortcuts are more robust than clicks where available)"},
+    {"click": [1180, 120]},
+    {"type": "web-srv", "interval": 0.06},
+    {"key": "Tab"},
+    {"type": "10.1.1.50", "interval": 0.06},
+    {"click_image": "anchors/ok_button.png", "timeout": 10},
+    {"say": "Publish and wait for the publish dialog to close"},
+    {"click_image": "anchors/publish.png", "timeout": 10},
+    {"wait_image": "anchors/publish_done.png", "timeout": 60},
+    {"shot": "after_publish.jpg"}
+  ]
+}

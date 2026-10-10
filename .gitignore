@@ -1,0 +1,9 @@
+agent.json
+controller.json
+config/
+*.log
+__pycache__/
+.venv/
+runs/
+function/local.settings.json
+function/.python_packages/
