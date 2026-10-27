@@ -124,3 +124,19 @@ In agent.json: `"tls_guard": "warn"` (log only) or `"off"`; `"tls_trusted_issuer
 Any `nano_session.py` command now starts the background session itself, detached from the shell, if none is
 running (log: `nano_work/serve.log`), so a reset shell no longer kills it. Do not paste install one-liners,
 `agent.json` or `controller.json` into a chat or log: they hold the function key and shared secret.
+
+## Read-only lab captures (scripts/labcap.ps1)
+
+For CLI captures from Gaia hosts on a shared lab, upload `scripts/labcap.ps1` to A-GUI once and use it
+instead of building a plink wrapper each time. One short session, nothing changed on the target:
+
+```powershell
+.\labcap.ps1 -Target <ip> -GetHostKey                       # read the fingerprint to pin
+.\labcap.ps1 -Target <ip> -User <user> -HostKey SHA256:... -PwFile <file on A-GUI> `
+    -Script collect.sh [-Expert] -Fetch /tmp/cap.tgz -Cleanup /tmp/cap,/tmp/cap.tgz -OutDir .\caps
+```
+
+- Passwords stay in a file on A-GUI (`-pwfile` on PuTTY 0.77+, else read locally); never put them in scripts or chats.
+- `-Expert` for users whose shell is clish; without it the script runs in bash via `plink -m`.
+- `-Cleanup` only deletes paths under /tmp or /var/tmp. Fetch big results with `nano_session.py get`, not `op file_get`.
+- Keep lab IPs, host keys and capture output out of this public repo.
