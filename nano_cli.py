@@ -14,10 +14,11 @@ nano_cli.py - command line / demo runner for NanoAgent.
     python nano_cli.py repl
     python nano_cli.py --support 4821-9930 shot -o user.jpg
 
-Config: controller.json (negotiate_url, group, secret) or NANO_* env vars.
+Config: controller.json (negotiate_url, group, secret), or the file named in NANO_CONFIG, or NANO_* env vars.
 """
 from __future__ import annotations
 
+import os
 import argparse
 import json
 import shlex
@@ -221,7 +222,7 @@ def cmd_crop(a):
 # --------------------------------------------------------------------------- main
 def main(argv=None):
     ap = argparse.ArgumentParser(description="NanoAgent controller CLI")
-    ap.add_argument("--config", default=str(HERE / "controller.json"))
+    ap.add_argument("--config", default=os.environ.get("NANO_CONFIG") or str(HERE / "controller.json"))
     ap.add_argument("--support", metavar="CODE", help="connect to a support session code instead")
     ap.add_argument("--timeout", type=float, default=30)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -264,11 +265,11 @@ def main(argv=None):
     p.add_argument("image")
     for n in ("x0", "y0", "x1", "y1"):
         p.add_argument(n, type=int)
-    p.add_argument("-o", "--out", required=True); p.set_defaults(local=cmd_crop)
+    p.add_argument("-o", "--out", required=True); p.set_defaults(local_fn=cmd_crop)
 
     a = ap.parse_args(argv)
-    if getattr(a, "local", None):
-        return a.local(a)
+    if getattr(a, "local_fn", None):
+        return a.local_fn(a)
     c = client(a)
     try:
         a.fn(c, a)

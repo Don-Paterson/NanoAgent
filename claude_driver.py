@@ -218,7 +218,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Let Claude drive a NanoAgent machine")
     ap.add_argument("task", nargs="?", help="what Claude should do")
     ap.add_argument("--task-file")
-    ap.add_argument("--config", default=str(HERE / "controller.json"))
+    ap.add_argument("--config", default=os.environ.get("NANO_CONFIG") or str(HERE / "controller.json"))
     ap.add_argument("--support", metavar="CODE")
     ap.add_argument("--model", default=os.environ.get("NANO_MODEL", "claude-sonnet-5-5"))
     ap.add_argument("--max-steps", type=int, default=80)

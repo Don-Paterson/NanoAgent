@@ -10,3 +10,5 @@ function/.python_packages/
 # screenshots taken with nano_cli (may show lab secrets on screen)
 *.jpg
 nano_work/
+controller-b.json
+nano_work_b/
