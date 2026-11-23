@@ -768,6 +768,22 @@ def load_config(path: Path) -> dict:
     return {}
 
 
+_instance_lock = None     # held for the life of the process
+
+
+def claim_single_instance(group):
+    """One agent per group on this machine. Without this, starting the agent
+    again (Start-NanoAgent.cmd, the logon task, the installer) adds another
+    copy, and every copy runs each command it receives."""
+    global _instance_lock
+    if not IS_WIN:
+        return True
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    _instance_lock = k32.CreateMutexW(None, False, f"Local\\NanoAgent-{group}")
+    return k32.GetLastError() != 183          # ERROR_ALREADY_EXISTS
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="NanoAgent remote-control agent")
     ap.add_argument("--config", default=str(HERE / "agent.json"))
@@ -809,6 +825,10 @@ def main(argv=None):
         if not group or not secret:
             sys.exit("group and secret are required (agent.json, --group/--secret, or --support)")
         key = key_from_secret(secret)
+        if not claim_single_instance(group):
+            msg = f"NanoAgent for group {group} is already running - use Restart-NanoAgent.ps1 to restart it"
+            log.warning(msg)
+            sys.exit(msg)
 
     stop_flag = threading.Event()
     banner = None
