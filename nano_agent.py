@@ -31,6 +31,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 
 IS_WIN = os.name == "nt"
@@ -59,6 +60,30 @@ pyautogui.FAILSAFE = False      # Claude may legitimately click (0,0); use the k
 pyautogui.PAUSE = 0.03
 log = logging.getLogger("nano.agent")
 HERE = Path(__file__).resolve().parent
+
+# Output log (19 Nov 2026): the command log (nano_agent.log) has the commands; this keeps what each 'run'
+# returned, one file per day: logs\output-YYYYMMDD.log next to the agent. Kept for 30 days.
+OUTPUT_LOG_DAYS = 30
+_out_lock = threading.Lock()
+
+def log_output(command: str, result: dict):
+    try:
+        d = HERE / "logs"
+        d.mkdir(exist_ok=True)
+        now = datetime.now()
+        f = d / f"output-{now:%Y%m%d}.log"
+        with _out_lock, open(f, "a", encoding="utf-8") as fh:
+            fh.write(f"===== {now:%Y-%m-%d %H:%M:%S} run rc={result.get('rc')}\n")
+            fh.write(f"$ {command}\n")
+            if result.get("stdout"):
+                fh.write(result["stdout"].rstrip("\n") + "\n")
+            if result.get("stderr"):
+                fh.write("[stderr]\n" + result["stderr"].rstrip("\n") + "\n")
+        for old in d.glob("output-*.log"):
+            if time.time() - old.stat().st_mtime > OUTPUT_LOG_DAYS * 86400:
+                old.unlink()
+    except Exception as e:  # logging must never break a command
+        log.warning("output log failed: %s", e)
 MAX_IMAGE_BYTES = 560_000       # base64 + encryption must stay under the 1 MB Web PubSub message limit
 MAX_FILE_BYTES = 512 * 1024
 
@@ -620,7 +645,9 @@ class Agent:
             err = dec(r["err"])
             if r["timed_out"]:
                 err += f"\n[timed out after {timeout}s; process tree killed]"
-            return {"rc": r["rc"], "stdout": dec(r["out"])[-60000:], "stderr": err[-20000:]}
+            out = {"rc": r["rc"], "stdout": dec(r["out"])[-60000:], "stderr": err[-20000:]}
+            log_output(command, out)
+            return out
         return await self._t(go)
 
     # ---- ops: jobs (long-running work that survives a dropped connection)
